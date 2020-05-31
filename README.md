@@ -98,7 +98,10 @@ spec:
 | Pod | v1 |
 | Service | v1 |
 | ReplicaSet | apps/v1 |
+| DaemonSet | apps/v1 |
 | Deployment | apps/v1 |
+| ConfigMap | v1 |
+| Secret | v1 |
 
 ### ReplicaSet (Controller)
 
@@ -337,6 +340,365 @@ spec:
 - logging
   - `kubectl logs -f pod-name container-name`
 
-### Application Lifecycle Management
+## Application Lifecycle Management
+
+### Rollout and versioning
+
+- `kubectl rollout status deployment/myapp-deployment`
+- `kubectl rollout history deployment/myapp-deployment`
+- deployment strategy
+  - Recreate
+  - RollingUpdate(default)
+- what counts as upgrade
+  - 1. update yaml file
+  - 2. `kubectl set image deployment/myapp-deployment nginx=nginx:1.9.1`
+- rollback
+  - `kybectl rollout undo deployment/myapp-deployment`
+- kubectl
+  ```sh
+  kubectl create -f myapp-deployment.yml
+  kubectl get deployment
+  # ugprade
+  kubectl apply -f myapp-deployment.yml
+  kubectl set image deployment/myapp-deployment nginx=nginx:1.9.1
+  # status
+  kubectl rollout status deployment/myapp-deployment
+  kubectl rollout history deployment/myapp-deployment
+  kubectl rollout undo deployment/myapp-dep1
+  ```
+
+### Config applications
+
+- config commands/args, environment variables, secrets
+- commands/args
+  - command in k8.yaml is the ENTRYPOINT in dockerfile
+  - args in k8.yaml is the CMD in dockerfile
+- environment variables
+  ```yml
+  env
+   - name: APP_COLOR
+     value: pink
+  ---
+  env
+   - name: APP_COLOR
+     valueFrom:
+       configMapKeyRef:
+  ---
+  env
+   - name: APP_COLOR
+     value:
+        secretKeyRef:
+  ```
+
+### ConfigMap
+
+- configuration data in kubernetes
+- imperative:
+  - 1. From literal: `kubectl create configmap app-config --from-literal=APP_COLOR=blue --from-literal=APP_MODE=prod`
+  - 2. From file: `kubectl create configmap app-config --from-file=app_config.properties`
+- create:
+
+  ```yml
+  apiVersion: v1
+  kind: ConfigMap
+  metadate:
+    name: app-config
+  data:
+    APP_COLOR: blue
+    APP_MODE: prod
+  ```
+
+- inject into pod
+
+  ```yml
+  --- env
+  envFrom:
+  - configMapRef:
+      name: app-config
+  --- single env
+  env
+  - name: APP_COLOR
+    valueFrom:
+      configMapKeyRef:
+        name: app-config
+        key: APP_COLOR
+  --- volume
+  volumes:
+    - name: app-config-volume
+      configMap:
+        name: app-config
+  ```
+
+### Secret
+
+- configuration secret in kubernetes
+- imperative:
+  - 1. From literal: `kubectl create secret generic secret-name --from-literal=DB_User=root --from-literal=DB_Password=passwooord`
+  - 2. From file: `kubectl create secret generic secret-name --from-file=app_secret.properties`
+- create:
+  - do `echo -n passwooord | base64` then add them to 
+  - do `echo -n cGFzc3dvb29yZA== | base64 --decode` to decode
+  - config Secret yaml
+
+    ```yml
+    apiVersion: v1
+    kind: Secret
+    metadate:
+      name: app-secret
+    data:
+      DB_User: cm9vdA==
+      DB_Password: cGFzc3dvb29yZA==
+    ```
+
+- inject into pod
+
+  ```yml
+  --- env
+  envFrom:
+    - secretRef:
+        name: secret-name
+  --- single env
+  env
+  - name: DB_Password
+    valueFrom:
+      secretKeyRef:
+        name: secret-name
+        key: DB_Password
+  --- volume
+  volumes:
+    - name: app-config-volume
+      secret:
+        secretName: app-config # (which will create files such as /opt/app-config-volumes/DB_Password and /opt/app-config-volumes/DB_Host)
+  ```
+
+### Multi-container Pods
+
+- share the same lifecycle, network, and storage, create together and destroy together
+- initContainers([docs](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/))
+
+  ```yml
+  apiVersion: v1
+  kind: Pod
+  metadata:
+    name: myapp-pod
+  spec:
+    containers:
+    - name: myapp-container
+      image: busybox:1.28
+      command: ['sh', '-c', 'echo The app is running! && sleep 3600']
+    initContainers:
+    - name: init-myservice
+      image: busybox:1.28
+      command: ['sh', '-c', 'until nslookup myservice; do echo waiting for myservice; sleep 2; done;']
+    - name: init-mydb
+      image: busybox:1.28
+      command: ['sh', '-c', 'until nslookup mydb; do echo waiting for mydb; sleep 2; done;']
+  ```
+
+## Cluster Maintenance
+
+- `kubectl drain node-1` // will move pods inside to other nodes and cordon the node
+- `kubectl uncordon node-1` // unstrict(uncordon) scheduling
+- `kubectl cordon node-2` // if the node is running a critical service
+
+### Cluster Upgrade Process
+
+![img](https://i.imgur.com/nB7oZOc.png)
+
+- Choises
+  - 1. few clicks on GCP
+  - 2. use kubeadm
+  - 3. manual
+- strategies
+  - upgrade master first then worker node
+  - upgrade worker node:
+    - 1. bring down all then upgrade all
+    - 2. rolling upgrading
+    - 3. add new nodes of new version, then move pods
+- upgrade one cluster process
+
+  ```sh
+  $ kubectl drain node01
+  # plan on upgrading cluster
+  $ kubeadm upgrade plan
+  # install kubeadm
+  $ apt install kubeadm=1.17.0-00
+  # upgrade kubeadm
+  $ kubeadm upgrade apply v1.17.0
+  # install kubelet
+  $ apt upgrade kubelet=1.17.0-00
+  # upgrade kubelet
+  $ kubeadm upgrade node config --kubelet-version v1.17.0
+  $ systemctl restart kubelet
+  $ kubectl uncordon node01
+  ```
+
+- Case study
+  - `kubeadm upgrade node` on node is like `kubeadm upgrade apply` on master
+  - to upgrade the master node, run
+
+    ```sh
+      kubectl drain master --ignore-daemonsets
+      apt install kubeadm=<version>
+      kubeadm upgrade apply <version>
+      apt install kubelet=<version>
+      kubectl uncordon master
+    ```
+
+  - to upgrade the worker nodes, run
+  
+  ```sh
+    kubectl drain node01 --ignore-daemonsets
+    ssh node01
+    node01$ apt install kubeadm=<version>
+    node01$ apt install kubelet=<version>
+    node01$ apt-mark hold kubelet
+    master$ kubectl uncordon node01
+  ```
 
 
+- use documention [no matter what](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/)
+
+### Backup & Restore
+
+- backup configuration
+  - `kubectl get all --all-namespaces -o yaml > all-deploy-backup.yaml`
+- ETCD cluster ([docs](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#backing-up-an-etcd-cluster))
+  - `etcdctl snapshot save snapshot.db`
+  - [backup](https://github.com/mmumshad/kubernetes-the-hard-way/blob/master/practice-questions-answers/cluster-maintenance/backup-etcd/etcd-backup-and-restore.md#2-backup)
+
+    ```sh
+    ETCDCTL_API=3 etcdctl \
+      --endpoints=https://[127.0.0.1]:2379 \ (--listen-client-urls)
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt \ (--key-file)
+      --cert=/etc/kubernetes/pki/etcd/server.crt \ (--cert-file)
+      --key=/etc/kubernetes/pki/etcd/server.key \ (--peer-trusted-ca-file)
+      snapshot save /tmp/snapshot-pre-boot.db
+    ```
+  - [restore](https://github.com/mmumshad/kubernetes-the-hard-way/blob/master/practice-questions-answers/cluster-maintenance/backup-etcd/etcd-backup-and-restore.md#3-restore-etcd-snapshot-to-a-new-folder) and update `/etc/kubernetes/manifests/etcd.yaml`
+
+    ```sh
+    ETCDCTL_API=3 etcdctl --endpoints=https://[127.0.0.1]:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+     --name=master \
+     --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key \
+     --data-dir /var/lib/etcd-from-backup \
+     --initial-cluster=master=https://127.0.0.1:2380 \
+     --initial-cluster-token etcd-cluster-1 \
+     --initial-advertise-peer-urls=https://127.0.0.1:2380 \
+     snapshot restore /tmp/snapshot-pre-boot.db
+    ```
+
+## Security
+
+### Basic Authentication
+
+- 1. create user list in `/tmp/users/user-details.csv`
+
+```csv
+# User File Contents
+password123,user1,u0001
+password123,user2,u0002
+password123,user3,u0003
+password123,user4,u0004
+password123,user5,u0005
+```
+
+- 2. link with kube-apiserver in `/etc/kubernetes/manifests/kube-apiserver.yaml` with `--authorization-mode` and `--basic-auth-file` flags
+
+```yml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kube-apiserver
+  namespace: kube-system
+spec:
+  containers:
+  - command:
+    - kube-apiserver
+    - --authorization-mode=Node,RBAC
+      ...
+    - --basic-auth-file=/tmp/users/user-details.csv
+```
+
+- 3. create `kind: Role` and `kind: RoleBinding` yaml files
+
+```yml
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  namespace: default
+  name: pod-reader
+rules:
+- apiGroups: [""] # "" indicates the core API group
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+---
+# This role binding allows "jane" to read pods in the "default" namespace.
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: read-pods
+  namespace: default
+subjects:
+- kind: User
+  name: user1 # Name is case sensitive
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role #this must be Role or ClusterRole
+  name: pod-reader # this must match the name of the Role or ClusterRole you wish to bind to
+  apiGroup: rbac.authorization.k8s.io
+```
+
+### TLS
+
+- get all list by get details
+- decode with `openssl x509 -in /etc/kubernetes/pki/ca.crt -text -noout`
+
+### Certificate API
+
+- create CSR
+  - 1. `openssl genrsa -out jane.key 2048`
+  - 2. `openssl req -new -key jane.key -subj "/CN=jane" -out jane.csr`
+  - 3. `cat jane.csr | base64 | tr -d '\n'`
+  - 4. create CertificateSigningRequest
+
+  ```yml
+  apiVersion: certificates.k8s.io/v1beta1
+  kind: CertificateSigningRequest
+  metadata:
+    name: jane
+  spec:
+    groups:
+    - system:authenticated
+    usages:
+    - digital signature
+    - key encipherment
+    - server auth
+    request:
+      GLKHLJKYHIHFVIFH...YUGHJGJKLHK
+  ````
+
+- recreate
+
+```sh
+openssl x509 -req -in /etc/kubernetes/pki/apiserver-etcd-client.csr -CA /etc/kubernetes/pki/etcd/ca.crt -CAkey /etc/kubernetes/pki/etcd/ca.key -CAcreateserial -out /etc/kubernetes/pki/apiserver-etcd-client.crtmaster
+```
+
+### KubeConfig
+
+- fsa
+
+- admin can do
+  - `kubectl get csr`
+  - `kubectl certificate approve jane`
+
+## CKAD
+
+- health status check
+  - livenessProbe
+  - readinessProbe
+- multi-container patterns
+  - sidecar
+  - adapter
+  - ambassador
