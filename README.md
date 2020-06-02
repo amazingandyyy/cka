@@ -16,6 +16,25 @@
   - kube-proxy: enabling communication between services within the cluster
   - container runtime engine
 
+## Kinds
+
+| Kind | Version |
+| ---- | --- |
+| Pod | v1 |
+| Service | v1 |
+| ReplicaSet | apps/v1 |
+| DaemonSet | apps/v1 |
+| Deployment | apps/v1 |
+| ConfigMap | v1 |
+| Secret | v1 |
+| Role | rbac.authorization.k8s.io/v1 |
+| LimitRange | v1 |
+| RoleBinding | rbac.authorization.k8s.io/v1 |
+| NetworkPolicy | networking.k8s.io/v1 |
+| CertificateSigningRequest | certificates.k8s.io/v1beta1 |
+| PersistentVolume | v1 |
+| PersistentVolumeClaim | v1 |
+
 ## Core
 
 ### ETCD cluster
@@ -90,18 +109,6 @@ spec:
   - name: nginx-container
     image: nginx
 ```
-
-- notes
-
-| Kind | Version |
-| ---- | --- |
-| Pod | v1 |
-| Service | v1 |
-| ReplicaSet | apps/v1 |
-| DaemonSet | apps/v1 |
-| Deployment | apps/v1 |
-| ConfigMap | v1 |
-| Secret | v1 |
 
 ### ReplicaSet (Controller)
 
@@ -685,13 +692,441 @@ roleRef:
 openssl x509 -req -in /etc/kubernetes/pki/apiserver-etcd-client.csr -CA /etc/kubernetes/pki/etcd/ca.crt -CAkey /etc/kubernetes/pki/etcd/ca.key -CAcreateserial -out /etc/kubernetes/pki/apiserver-etcd-client.crtmaster
 ```
 
-### KubeConfig
-
-- fsa
-
 - admin can do
   - `kubectl get csr`
   - `kubectl certificate approve jane`
+
+
+### KubeConfig
+
+- a config file in $HOME/.kube/config
+
+```yml
+apiVersion: v1
+kind: Config
+current-context: aws-user@kubernetes-on-aws
+clusters:
+- name: production
+  cluster:
+    certificate-authority: /etc/kubernetes/pki/ca.crt
+    server: https://172.17.0.8:6443
+
+- name: development
+  cluster:
+    certificate-authority: /etc/kubernetes/pki/ca.crt
+    server: https://172.17.0.8:6443
+
+- name: kubernetes-on-aws
+  cluster:
+    certificate-authority: /etc/kubernetes/pki/ca.crt
+    server: https://172.17.0.8:6443
+
+- name: test-cluster-1
+  cluster:
+    certificate-authority: /etc/kubernetes/pki/ca.crt
+    server: https://172.17.0.8:6443
+
+contexts:
+- name: test-user@development
+  context:
+    cluster: development
+    user: test-user
+
+- name: aws-user@kubernetes-on-aws
+  context:
+    cluster: kubernetes-on-aws
+    user: aws-user
+
+- name: test-user@production
+  context:
+    cluster: production
+    user: test-user
+
+- name: research
+  context:
+    cluster: test-cluster-1
+    user: dev-user
+
+users:
+- name: test-user
+  user:
+    client-certificate: /etc/kubernetes/pki/users/test-user/test-user.crt
+    client-key: /etc/kubernetes/pki/users/test-user/test-user.key
+- name: dev-user
+  user:
+    client-certificate: /etc/kubernetes/pki/users/dev-user/developer-user.crt
+    client-key: /etc/kubernetes/pki/users/dev-user/dev-user.key
+- name: aws-user
+  user:
+    client-certificate: /etc/kubernetes/pki/users/aws-user/aws-user.crt
+    client-key: /etc/kubernetes/pki/users/aws-user/aws-user.key
+```
+
+- can config multiple accounts:
+
+![img](https://i.imgur.com/gdQGnvM.png)
+
+- kubectl
+  - to see current config: `kubectl config view`
+  - to change current config: `kubectl config use-context prod-user@production`, `kubectl config --kubeconfig=/root/my-kube-config use-context research`
+
+### API Group
+
+![img](https://i.imgur.com/yFUf5vx.png)
+
+- get all path:
+
+```sh
+$ curl https://192.168.64.6:8443 -k --key /Users/andy/.minikube/client.key --cert /Users/andy/.minikube/client.crt --cacert /Users/andy/.minikube/ca.crt
+$ kubectl proxy
+$ curl http://127.0.0.1:8001 -k --key /Users/andy/.minikube/client.key --cert /Users/andy/.minikube/client.crt --cacert /Users/andy/.minikube/ca.crt
+```
+
+### Namespaced RBAC
+
+- role base access controller, only for controlling namespaced resources
+
+```yml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: developer
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["list", "get", "create", "update", "delete"]
+  # resourceNames: ["blue", "orange"]
+- apiGroups: [""]
+  resources: ["ConfigMap"]
+  verbs: ["create"]
+```
+
+```yml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: devuser-developer-binding
+subjects:
+- kind: User
+  name: dev-user
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: developer
+  apiGroup: rbac.authorization.k8s.io
+```
+
+- checking
+  - kubectl get roles
+  - kubectl get rolebindings
+  - kubectl auth can-i create deployment
+
+### Cluster RBAC
+
+- `kubectl api-resources --namespaced=true` to check what resource are bound by namespaces
+- use clusteroles and clusterrolebindings to change access control
+- yaml are the smae as role/rolebinding
+
+### Image Security
+
+- pull from private registry
+  - create docker-registry secret
+
+    ```sh
+    $ kubectl create secret docker-registry regcred \
+    --docker-server= \
+    --docker-username= \
+    --docker-password= \
+    --docker-email=
+    $ kubectl create secret docker-registry private-reg-cred \
+    --docker-server=myprivateregistry.com:5000 \
+    --docker-username=dock_user\
+    --docker-password=dock_password \
+    --docker-email=dock_user@myprivateregistry.com
+    ```
+
+  - use it in the pod file, add `spec.imagePullSecrets: - name: regcred`
+
+### Security Context
+
+- only supported at the container level
+
+  ```yml
+  spec.containers:
+    - name: ubuntu
+      image: ubuntu
+      command: ["sleep", "3600"]
+      securityContext:
+        runAsUser: 1000
+        capabilities:
+          add: ["MAC_ADMIN"]
+  ```
+
+### Netowrk Policy
+
+- default is that "all allow" for each one in the cluster
+- if NetworkPolicy is presented, it will be strict
+- use `podSelector.matchLabels` to assign the network policy to the pods
+
+e.g., api can connect with db, then ingress policy for db, egress policy for api
+
+```yml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+    policyTypes:
+    - Ingress
+    ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            name: api-pod
+      ports:
+      - protocol: TCP
+        port: 3306
+```
+
+## Storage
+
+- docker storage
+  - storage driver
+  - volume driver
+- kubernetes
+  - container runtime interface (CRI)
+  - container network interface (CNI)
+  - container storage interface (CSI)
+- use volumes and volumeMount
+
+### Volume
+
+```yml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mypod
+spec:
+  containers:
+    - name: myfrontend
+      image: nginx
+      volumeMounts:
+      - mountPath: "/var/www/html"
+        name: mypd
+  volumes:
+    - name: mypd
+      hostPath:
+        path: /data/html
+        type: Directory
+```
+
+### Persisten Volume
+
+- persisten voluem (cluster level)
+
+```yml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: mv-vol1
+spec:
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 1Gi
+  hostPath:
+    path: /tmp/data
+  # awsElasticBlockStore:
+  #   volumeID: <volume-id>
+  #   fsType: ext4
+```
+
+- persisten volume claim, once the PV is used by the PVC, other PVC cannot use it, and will stay as pending
+- match PV and PVC by checking
+  - sufficient capacity
+  - access modes
+  - volume modes
+  - storage class
+  - selector
+
+```yml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mvclaim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+```
+
+- add to pods ([docs](https://kubernetes.io/docs/concepts/storage/persistent-volumes/#claims-as-volumes))
+
+```yml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mypod
+spec:
+  containers:
+    - name: myfrontend
+      image: nginx
+      volumeMounts:
+      - mountPath: "/var/www/html"
+        name: mypd
+  volumes:
+    - name: mypd
+      persistentVolumeClaim:
+        claimName: myclaim
+```
+
+### Network
+
+- tools:
+
+```sh
+nslookup
+ip link
+ip addr
+ip addr add 192.168.1.10/24 dev eth0
+ip route
+ip route add 192.168.1.10/24 via 192.168.2.1
+cat /proc/sys/net/ipv4/ip_forward, cat /etc/hosts # 1
+ping
+arp
+netstat -nplt
+```
+
+![img](https://i.imgur.com/kWlFvpK.png)
+
+#### Kubernetes Networking Model
+
+- requirements
+  - Every POD should have an IP address
+  - Every POD should be able to communicate with every other POD in the same node
+  - Every POD should be able to communicate with every other POD on other nodes without LAN
+
+- scenario
+
+![img](https://i.imgur.com/bxiqXGZ.png)
+
+- setup on the scenario
+  - 1. Create veth pair
+    - `ip link add v-net-0 type bridge` on each node
+  - 2. Attach veth pair
+    - `ip link set dev v-net-0 up` on each node to bring them up
+  - 3. Assign IP address:
+    - `ip -n <namespace> addr add ...`
+    - `ip -n <namespace> route add ...`
+    - `ip addr add 10.244.1.1/24 dev v-net-0`, `ip addr add 10.244.2.1/24 dev v-net-0`, and `ip addr add 10.244.3.1/24 dev v-net-0` to each node
+  - 4. Bring up interface
+    - `ip -n <namespace> link set ...`
+  - `ip route add 10.244.2.2 via 192.168.1.12` and `ip route add 10.244.3.1 via 192.168.1.13`
+- config file is in `/etc/cni/net.d/*.conf`
+- weave CNI solution
+
+#### IP address management (IPAM)
+
+- pod networking
+- service networking
+  - `iptables -L -t net | grep db-service`
+
+![img](https://i.imgur.com/HzUIdkR.png)
+
+#### DNS in K8s
+
+- in one cluster, `curl http://web-service`
+- cross clusters, call service, `curl http://web-service.apps.svc.cluster.local`
+- cross clusters, call pods, `curl http://10-244-2-5.apps.pod.cluster.local`
+
+### Ingress
+
+- eliminate dulplicted LB provided by service
+- deploy
+  - Deployment: deploy `nginx-ingress-controller`å as a pod first
+  - ConfigMap: create ConfigMap
+  - NodePort: create a NodePort service for the nginx-ingress-controller pod
+  - ServiceAccount: for nginx-ingress-controller to use for Roles, ClusterRoles, and RoleBindings
+  - Ingress: create ingress roles
+
+![img](https://i.imgur.com/i9WoRo8.png)
+
+- version A:single service
+  ```yml
+  apiVersion: extensions/v1beta1
+  kind: Ingress
+  metadata:
+    name: ingress-app
+  spec:
+    backend:
+      serviceName: app-service
+      servicePort: 8080
+  ```
+
+- version B: sub-path (rule 1)
+  ```yml
+  apiVersion: extensions/v1beta1
+  kind: Ingress
+  metadata:
+    name: ingress-wear-watch
+  spec:
+    rules:
+    - http:
+      paths:
+      - path: /wear
+        backend:
+          serviceName: wear-service
+          servicePort: 8080
+      - path: /watch
+        backend:
+          serviceName: watch-service
+          servicePort: 8088
+  ```
+
+- version C: sub-domain (rule 2, 3)
+
+  ```yml
+  apiVersion: extensions/v1beta1
+  kind: Ingress
+  metadata:
+    name: ingress-wear-watch
+  spec:
+    rules:
+    - host: wear.my-online-store.com
+      http:
+        paths:
+        - backend:
+          serviceName: wear-service
+          servicePort: 8080
+    - host: watch.my-online-store.com
+      http:
+        paths:
+        - backend:
+          serviceName: watch-service
+          servicePort: 8088
+  ```
+
+  - 404 page: (rule 4)
+    - create `default-http-backend:80` for default/fallback service (404 page..etc)
+
+- rewrite target
+
+  ```yml
+  metadata:
+    name: test-ingress
+    namespace: critical-space
+    annotations:
+      nginx.ingress.kubernetes.io/rewrite-target: /
+  ...
+  ```
+  
+  - without: `http://<ingress-service>:<ingress-port>/wear --> http://<wear-service>:<port>/wear`
+  - what we want is `http://<ingress-service>:<ingress-port>/wear --> http://<wear-service>:<port>/` (rewrite the `/wear` with `/`)
 
 ## CKAD
 
